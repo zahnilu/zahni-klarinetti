@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"> <title>Klarinetten Coach Mobile</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/abcjs/6.2.2/abcjs-basic-min.js"></script>
+    <script src="https://unpkg.com/ml5@latest/dist/ml5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/p5.min.js"></script>
+
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 15px; text-align: center; background: #f0f2f5; color: #333; }
+        
+        /* Handy-Optimierte Buttons */
+        .btn-group { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
+        button { padding: 15px; font-size: 18px; border-radius: 12px; border: none; font-weight: bold; width: 100%; touch-action: manipulation; }
+        .btn-count { background: #3498db; color: white; }
+        .btn-stop { background: #e74c3c; color: white; opacity: 0.5; }
+        
+        .status-box { background: white; padding: 15px; border-radius: 12px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.05); }
+        
+        /* Visuelles Feedback */
+        .dots { display: flex; justify-content: center; gap: 15px; margin: 20px 0; }
+        .dot { width: 50px; height: 50px; border-radius: 50%; background: #ddd; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: bold; color: white; transition: all 0.2s; }
+        .active { background: #2ecc71; transform: scale(1.1); box-shadow: 0 0 15px #2ecc71; }
+        .breath { background: #f1c40f; color: black; animation: pulse 0.8s infinite; }
+        
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.15); } 100% { transform: scale(1); } }
+
+        #paper { background: white; padding: 10px; border-radius: 8px; overflow-x: auto; min-height: 150px; }
+        
+        /* Lade-Overlay */
+        #loader { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.9); display: flex; align-items: center; justify-content: center; z-index: 1000; flex-direction: column;}
+    </style>
+</head>
+<body>
+
+    <div id="loader">
+        <div style="font-size: 2em;">🎷</div>
+        <p>Lade KI-Modell fürs Handy...</p>
+        <small>(Bitte warten)</small>
+    </div>
+
+    <h3>Klarinetten Reise-Coach</h3>
+
+    <div class="status-box">
+        <div id="noteDisplay" style="font-size: 3em; font-weight: 800; color: #333;">-</div>
+        <div id="hzDisplay" style="color: #888;">0 Hz</div>
+        <div id="statusText" style="margin-top: 5px; font-size: 0.9em;">Modell wird geladen...</div>
+    </div>
+
+    <div class="dots">
+        <div id="d1" class="dot">1</div>
+        <div id="d2" class="dot">2</div>
+        <div id="d3" class="dot">3</div>
+        <div id="d4" class="dot">💨</div>
+    </div>
+
+    <div class="btn-group">
+        <button id="btnCount" class="btn-count" disabled>🎤 Einzählen (1, 2, 3)</button>
+        <button id="btnStop" class="btn-stop" disabled>Stopp / Reset</button>
+    </div>
+
+    <div id="paper"></div>
+
+    <script>
+        // --- Variablen ---
+        let audioContext;
+        let pitch; 
+        let mic;
+        let modelLoaded = false;
+        let isRunning = false;
+        let isCounting = false;
+        
+        // Zählen
+        let countTaps = [];
+        let bpm = 60;
+        let lastTap = 0;
+
+        // Noten
+        let recordedNotes = [];
+        let currentNote = null;
+        let noteStartTime = 0;
+
+        // UI
+        const statusText = document.getElementById('statusText');
+        const loader = document.getElementById('loader');
+        const btnCount = document.getElementById('btnCount');
+        const btnStop = document.getElementById('btnStop');
+
+        // --- 1. Setup (P5.js & ML5) ---
+        // P5 wird automatisch ausgeführt wenn geladen
+        function setup() {
+            noCanvas(); // Wir brauchen kein P5 Canvas, nur Audio
+            audioContext = getAudioContext();
+            mic = new p5.AudioIn();
+            mic.start(() => {
+                // Wenn Mic ready ist, lade das Modell
+                console.log("Mic Started, loading model...");
+                startPitch();
+            });
+        }
+
+        function startPitch() {
+            // ML5 Pitch Detection (CREPE Modell - sehr genau für Musik)
+            pitch = ml5.pitchDetection('./model/', audioContext , mic.stream, modelReady);
+        }
+
+        function modelReady() {
+            modelLoaded = true;
+            loader.style.display = 'none';
+            statusText.innerText = "Bereit. Drücke 'Einzählen'.";
+            btnCount.disabled = false;
+            btnCount.innerText = "🎤 Einzählen Starten";
+        }
+
+        // --- 2. Hauptschleife (wird ständig aufgerufen) ---
+        function getPitch() {
+            pitch.getPitch(function(err, frequency) {
+                if (frequency) {
+                    processAudio(frequency);
+                } else {
+                    processAudio(null); // Stille
+                }
+                
+                if (isRunning || isCounting) {
+                    getPitch(); // Rekursiv aufrufen für Endlosschleife
+                }
+            });
+        }
+
+        // --- 3. Logik ---
+
+        btnCount.onclick = () => {
+            // Wichtig für Mobile Safari: AudioContext resume auf User Click
+            if (getAudioContext().state !== 'running') {
+                getAudioContext().resume();
+            }
+            
+            isCounting = true;
+            isRunning = true; // Loop starten
+            countTaps = [];
+            lastTap = 0;
+            
+            btnCount.disabled = true;
+            btnStop.disabled = false;
+            btnStop.style.opacity = "1";
+            
+            statusText.innerText = "Sag laut: EINS ... ZWEI ... DREI";
+            resetDots();
+            
+            getPitch(); // Analyse starten
+        };
+
+        btnStop.onclick = () => {
+            isRunning = false;
+            isCounting = false;
+            btnCount.disabled = false;
+            btnStop.disabled = true;
+            btnStop.style.opacity = "0.5";
+            statusText.innerText = "Pausiert.";
+            resetDots();
+        };
+
+        function processAudio(freq) {
+            // Lautstärke holen für "Zähl"-Erkennung
+            let vol = mic.getLevel(); 
+            
+            // UI Update (Frequenz)
+            if(freq) {
+                let note = freqToNote(freq);
+                document.getElementById('hzDisplay').innerText = Math.round(freq) + " Hz";
+                // Transponieren für B-Klarinette (Anzeige +2 Halbtöne)
+                document.getElementById('noteDisplay').innerText = transpose(note);
+            }
+
+            // A) Zähl-Modus
+            if (isCounting) {
+                if (vol > 0.05 && (millis() - lastTap > 400)) { // Einfacher Schwellenwert
+                    lastTap = millis();
+                    countTaps.push(lastTap);
+                    highlightDot(countTaps.length);
+                    
+                    if(countTaps.length === 3) {
+                        finishCounting();
+                    }
+                }
+            }
+            
+            // B) Spiel-Modus (Noten schreiben)
+            if (!isCounting && isRunning && freq) {
+                // Einfache Logik: Wenn Ton stabil > 200ms, schreib ihn auf
+                // (Hier stark vereinfacht für die Mobile Demo)
+                let note = freqToNote(freq);
+                // Hier könntest du ABCJS Logik einfügen
+                // Für Demo zeigen wir nur Live Note an
+            }
+        }
+
+        function finishCounting() {
+            isCounting = false;
+            // BPM berechnen
+            let diff1 = countTaps[1] - countTaps[0];
+            let diff2 = countTaps[2] - countTaps[1];
+            let avgMs = (diff1 + diff2) / 2;
+            bpm = Math.round(60000 / avgMs);
+            
+            statusText.innerText = `Tempo: ${bpm} BPM. ATMEN!`;
+            
+            // Atmen (Gelb)
+            highlightDot(4);
+            
+            setTimeout(() => {
+                statusText.innerText = "🔴 SPIELEN!";
+                statusText.style.color = "red";
+                // Ab hier würde die Aufnahme starten
+            }, avgMs);
+        }
+
+        // --- Helfer ---
+        
+        function highlightDot(n) {
+            if(n>4) return;
+            let d = document.getElementById('d'+n);
+            if(n===4) d.classList.add('breath');
+            else d.classList.add('active');
+        }
+
+        function resetDots() {
+            for(let i=1; i<=4; i++) {
+                let d = document.getElementById('d'+i);
+                d.className = 'dot';
+            }
+            statusText.style.color = "#333";
+        }
+
+        // Frequenz zu Note (Concert Pitch)
+        function freqToNote(freq) {
+            const noteStrings = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+            let n = Math.round(12 * (Math.log2(freq / 440)) + 69);
+            let note = noteStrings[n % 12];
+            return note;
+        }
+        
+        function transpose(note) {
+            // B-Klarinette Transposition (Concert -> +2 Halbtöne)
+            const map = {
+                "C": "D", "C#": "D#", "D": "E", "D#": "F", "E": "F#", "F": "G", 
+                "F#": "G#", "G": "A", "G#": "A#", "A": "B", "A#": "C", "B": "C#"
+            };
+            return map[note] || note;
+        }
+
+        // ABCJS Render Init
+        ABCJS.renderAbc("paper", "M: 4/4\nL: 1/4\nK: C\n z4 |", { responsive: "resize", scale: 1.2 });
+
+    </script>
+</body>
+</html>
