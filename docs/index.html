@@ -103,7 +103,10 @@
 
         function startPitch() {
             // ML5 Pitch Detection (CREPE Modell - sehr genau für Musik)
-            pitch = ml5.pitchDetection('./model/', audioContext , mic.stream, modelReady);
+            // fuer lokale koeffizienten 
+pitch = ml5.pitchDetection('./model/', audioContext , mic.stream, modelReady);
+pitch = ml5.pitchDetection('https://cdn.jsdelivr.net/gh/ml5js/ml5-data-and-models/models/pitch-detection/crepe/', audioContext , mic.stream, modelReady);
+
         }
 
         function modelReady() {
